@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>체스</title>
+  <style>
+    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
+    table { border-collapse: collapse; }
+    td {
+      width: 60px;
+      height: 60px;
+      text-align: center;
+      font-size: 40px;
+      cursor: pointer;
+    }
+    .white { background-color: #f0d9b5; }
+    .black { background-color: #b58863; }
+    .selected { background-color: #f6f669; }
+    .legal { background-color: rgba(0,200,0,0.4); }
+    .check { background-color: rgba(255,0,0,0.5); }
+    #status { font-size: 1.3rem; margin: 10px; font-weight: bold; }
+    #restart { display: none; margin: 10px; padding: 8px 20px; font-size: 1rem; cursor: pointer; }
+    #color-select {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      margin: 20px;
+    }
+    #color-select button {
+      padding: 15px 40px;
+      font-size: 1.2rem;
+      cursor: pointer;
+      border-radius: 8px;
+      border: 2px solid #333;
+    }
+    #game { display: none; flex-direction: column; align-items: center; }
+    #promotion {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: white;
+      border: 2px solid black;
+      border-radius: 10px;
+      padding: 20px;
+      text-align: center;
+      z-index: 100;
+    }
+    #promotion span {
+      font-size: 50px;
+      margin: 5px;
+      cursor: pointer;
+      padding: 5px;
+      border-radius: 5px;
+    }
+    #promotion span:hover { background: #f0d9b5; }
+  </style>
+</head>
+<body>
+
+<div id="color-select">
+  <h2>색깔을 선택하세요</h2>
+  <button onclick="chooseColor('white')">⬜ 백으로 플레이</button>
+  <button onclick="chooseColor('black')">⬛ 흑으로 플레이</button>
+</div>
+
+<div id="game">
+  <p id="status">로딩 중...</p>
+  <table id="board"></table>
+  <button id="restart" onclick="restartGame()">다시 시작</button>
+  <div id="promotion">
+    <p style="font-size:1rem; margin:0 0 10px 0;">프로모션 선택</p>
+    <span id="p-q" onclick="choosePromotion('Q')"></span>
+    <span id="p-r" onclick="choosePromotion('R')"></span>
+    <span id="p-b" onclick="choosePromotion('B')"></span>
+    <span id="p-n" onclick="choosePromotion('N')"></span>
+  </div>
+</div>
+
+<script>
+  const SERVER = "https://carwash-travesty-grab.ngrok-free.dev";
+
+  const whitePieces = ["♔","♕","♖","♗","♘","♙"];
+  const blackPieces = ["♚","♛","♜","♝","♞","♟"];
+
+  function isWhite(p) { return whitePieces.includes(p); }
+  function isBlack(p) { return blackPieces.includes(p); }
+  function isEmpty(p) { return p === ""; }
+  function isEnemy(p, turn) { return turn === "white" ? isBlack(p) : isWhite(p); }
+  function isFriend(p, turn) { return turn === "white" ? isWhite(p) : isBlack(p); }
+
+  let myColor = null;
+  let selected = null;
+  let currentPieces = [];
+  let currentTurn = "white";
+  let currentEnPassant = null;
+  let currentCastling = { whiteKing:true, whiteQueen:true, blackKing:true, blackQueen:true };
+  let legalMoves = [];
+  let gameOver = false;
+  let pendingPromotion = null;
+  let pollInterval = null;
+  const cells = [];
+
+  const statusEl = document.getElementById("status");
+  const restartBtn = document.getElementById("restart");
+  const board = document.getElementById("board");
+
+  for (let row = 0; row < 8; row++) {
+    const tr = document.createElement("tr");
+    cells[row] = [];
+    for (let col = 0; col < 8; col++) {
+      const td = document.createElement("td");
+      td.className = (row + col) % 2 === 0 ? "white" : "black";
+      td.addEventListener("click", () => handleClick(row, col));
+      cells[row][col] = td;
+      tr.appendChild(td);
+    }
+    board.appendChild(tr);
+  }
+
+  function chooseColor(color) {
+    myColor = color;
+    document.getElementById("color-select").style.display = "none";
+    document.getElementById("game").style.display = "flex";
+    fetchState();
+    pollInterval = setInterval(fetchState, 1000);
+  }
+
+  function getRawMoves(row, col, pieces, turn) {
+    const piece = pieces[row][col];
+    const moves = [];
+
+    if (piece === "♙") {
+      if (row > 0 && isEmpty(pieces[row-1][col])) {
+        moves.push([row-1, col]);
+        if (row === 6 && isEmpty(pieces[row-2][col])) moves.push([row-2, col]);
+      }
+      if (row > 0 && col > 0 && isBlack(pieces[row-1][col-1])) moves.push([row-1, col-1]);
+      if (row > 0 && col < 7 && isBlack(pieces[row-1][col+1])) moves.push([row-1, col+1]);
+    }
+    if (piece === "♟") {
+      if (row < 7 && isEmpty(pieces[row+1][col])) {
+        moves.push([row+1, col]);
+        if (row === 1 && isEmpty(pieces[row+2][col])) moves.push([row+2, col]);
+      }
+      if (row < 7 && col > 0 && isWhite(pieces[row+1][col-1])) moves.push([row+1, col-1]);
+      if (row < 7 && col < 7 && isWhite(pieces[row+1][col+1])) moves.push([row+1, col+1]);
+    }
+    if (["♖","♜","♕","♛"].includes(piece)) {
+      for (const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+        let r=row+dr, c=col+dc;
+        while (r>=0&&r<8&&c>=0&&c<8) {
+          if (isEmpty(pieces[r][c])) moves.push([r,c]);
+          else { if (isEnemy(pieces[r][c],turn)) moves.push([r,c]); break; }
+          r+=dr; c+=dc;
+        }
+      }
+    }
+    if (["♗","♝","♕","♛"].includes(piece)) {
+      for (const [dr,dc] of [[1,1],[1,-1],[-1,1],[-1,-1]]) {
+        let r=row+dr, c=col+dc;
+        while (r>=0&&r<8&&c>=0&&c<8) {
+          if (isEmpty(pieces[r][c])) moves.push([r,c]);
+          else { if (isEnemy(pieces[r][c],turn)) moves.push([r,c]); break; }
+          r+=dr; c+=dc;
+        }
+      }
+    }
+    if (["♘","♞"].includes(piece)) {
+      for (const [dr,dc] of [[-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1]]) {
+        const r=row+dr, c=col+dc;
+        if (r>=0&&r<8&&c>=0&&c<8&&!isFriend(pieces[r][c],turn)) moves.push([r,c]);
+      }
+    }
+    if (["♔","♚"].includes(piece)) {
+      for (const [dr,dc] of [[0,1],[0,-1],[1,0],[-1,0],[1,1],[1,-1],[-1,1],[-1,-1]]) {
+        const r=row+dr, c=col+dc;
+        if (r>=0&&r<8&&c>=0&&c<8&&!isFriend(pieces[r][c],turn)) moves.push([r,c]);
+      }
+    }
+    return moves;
+  }
+
+  function isAttacked(row, col, pieces, turn) {
+    const enemy = turn === "white" ? "black" : "white";
+    for (let r=0; r<8; r++)
+      for (let c=0; c<8; c++)
+        if (isEnemy(pieces[r][c], turn))
+          if (getRawMoves(r, c, pieces, enemy).some(([mr,mc]) => mr===row&&mc===col))
+            return true;
+    return false;
+  }
+
+  function applyMove(pieces, fr, fc, tr, tc) {
+    const np = pieces.map(r => [...r]);
+    np[tr][tc] = np[fr][fc];
+    np[fr][fc] = "";
+    if ((np[tr][tc]==="♙"||np[tr][tc]==="♟") && fc!==tc && pieces[tr][tc]==="")
+      np[fr][tc] = "";
+    return np;
+  }
+
+  function findKing(pieces, turn) {
+    const king = turn === "white" ? "♔" : "♚";
+    for (let r=0; r<8; r++)
+      for (let c=0; c<8; c++)
+        if (pieces[r][c]===king) return [r,c];
+    return null;
+  }
+
+  function isInCheck(pieces, turn) {
+    const king = findKing(pieces, turn);
+    if (!king) return false;
+    return isAttacked(king[0], king[1], pieces, turn);
+  }
+
+  function getLegalMoves(row, col, pieces, turn, enPassant, castling) {
+    const piece = pieces[row][col];
+    let moves = getRawMoves(row, col, pieces, turn);
+
+    if ((piece==="♙"||piece==="♟") && enPassant) {
+      const [epr,epc] = enPassant;
+      const dir = piece==="♙" ? -1 : 1;
+      if (row+dir===epr && Math.abs(col-epc)===1)
+        moves.push([epr, epc]);
+    }
+
+    if (piece==="♔" && row===7 && col===4 && !isInCheck(pieces, turn)) {
+      if (castling.whiteKing && isEmpty(pieces[7][5]) && isEmpty(pieces[7][6])
+              && !isAttacked(7,5,pieces,turn) && !isAttacked(7,6,pieces,turn))
+        moves.push([7,6]);
+      if (castling.whiteQueen && isEmpty(pieces[7][3]) && isEmpty(pieces[7][2]) && isEmpty(pieces[7][1])
+              && !isAttacked(7,3,pieces,turn) && !isAttacked(7,2,pieces,turn))
+        moves.push([7,2]);
+    }
+    if (piece==="♚" && row===0 && col===4 && !isInCheck(pieces, turn)) {
+      if (castling.blackKing && isEmpty(pieces[0][5]) && isEmpty(pieces[0][6])
+              && !isAttacked(0,5,pieces,turn) && !isAttacked(0,6,pieces,turn))
+        moves.push([0,6]);
+      if (castling.blackQueen && isEmpty(pieces[0][3]) && isEmpty(pieces[0][2]) && isEmpty(pieces[0][1])
+              && !isAttacked(0,3,pieces,turn) && !isAttacked(0,2,pieces,turn))
+        moves.push([0,2]);
+    }
+
+    moves = moves.filter(([tr,tc]) => {
+      let np = applyMove(pieces, row, col, tr, tc);
+      if ((piece==="♔"||piece==="♚") && Math.abs(tc-col)===2) {
+        if (tc===6) { np[row][5]=np[row][7]; np[row][7]=""; }
+        if (tc===2) { np[row][3]=np[row][0]; np[row][0]=""; }
+      }
+      return !isInCheck(np, turn);
+    });
+
+    return moves;
+  }
+
+  function hasAnyLegalMove(pieces, turn, enPassant, castling) {
+    for (let r=0; r<8; r++)
+      for (let c=0; c<8; c++)
+        if (isFriend(pieces[r][c], turn))
+          if (getLegalMoves(r,c,pieces,turn,enPassant,castling).length > 0)
+            return true;
+    return false;
+  }
+
+  function clearHighlights() {
+    for (let r=0; r<8; r++)
+      for (let c=0; c<8; c++)
+        cells[r][c].classList.remove("selected","legal","check");
+  }
+
+  function highlightCheck(pieces, turn) {
+    if (isInCheck(pieces, turn)) {
+      const king = findKing(pieces, turn);
+      if (king) cells[king[0]][king[1]].classList.add("check");
+    }
+  }
+
+  async function fetchState() {
+    if (gameOver) return;
+    try {
+      const res = await fetch(SERVER + "/state", {
+        headers: { "ngrok-skip-browser-warning": "true" }
+      });
+      const data = await res.json();
+      currentPieces = data.pieces;
+      currentTurn = data.turn;
+      currentEnPassant = data.enPassant || null;
+      currentCastling = data.castling || { whiteKing:true, whiteQueen:true, blackKing:true, blackQueen:true };
+
+      for (let r=0; r<8; r++)
+        for (let c=0; c<8; c++)
+          cells[r][c].textContent = currentPieces[r][c];
+
+      clearHighlights();
+      highlightCheck(currentPieces, currentTurn);
+
+      const hasMove = hasAnyLegalMove(currentPieces, currentTurn, currentEnPassant, currentCastling);
+      const inCheck = isInCheck(currentPieces, currentTurn);
+
+      if (!hasMove) {
+        gameOver = true;
+        clearInterval(pollInterval);
+        restartBtn.style.display = "inline";
+        statusEl.textContent = inCheck
+                ? (currentTurn === "white" ? "⚫ 흑 승리! 체크메이트!" : "⬜ 백 승리! 체크메이트!")
+                : "스테일메이트 — 무승부!";
+      } else {
+        statusEl.textContent = inCheck
+                ? (currentTurn === "white" ? "⬜ 백 체크!" : "⚫ 흑 체크!")
+                : (currentTurn === "white" ? "⬜ 백의 차례" : "⚫ 흑의 차례");
+      }
+    } catch(e) {
+      console.error(e);
+    }
+  }
+
+  async function sendMove(from, to, promotion = null) {
+    await fetch(SERVER + "/move", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "ngrok-skip-browser-warning": "true"
+      },
+      body: JSON.stringify({ from, to, promotion })
+    });
+  }
+
+  async function restartGame() {
+    await fetch(SERVER + "/restart", {
+      method: "POST",
+      headers: { "ngrok-skip-browser-warning": "true" }
+    });
+    gameOver = false;
+    restartBtn.style.display = "none";
+    selected = null;
+    legalMoves = [];
+    fetchState();
+    pollInterval = setInterval(fetchState, 1000);
+  }
+
+  function showPromotion(isWhitePawn) {
+    const p = isWhitePawn
+            ? { Q:"♕", R:"♖", B:"♗", N:"♘" }
+            : { Q:"♛", R:"♜", B:"♝", N:"♞" };
+    document.getElementById("p-q").textContent = p.Q;
+    document.getElementById("p-r").textContent = p.R;
+    document.getElementById("p-b").textContent = p.B;
+    document.getElementById("p-n").textContent = p.N;
+    document.getElementById("promotion").style.display = "block";
+  }
+
+  function choosePromotion(piece) {
+    document.getElementById("promotion").style.display = "none";
+    if (!pendingPromotion) return;
+    sendMove(pendingPromotion.from, pendingPromotion.to, piece).then(() => fetchState());
+    pendingPromotion = null;
+  }
+
+  function handleClick(row, col) {
+    if (gameOver) return;
+    if (myColor !== currentTurn) return; // 내 턴 아닐 때 무시
+
+    const piece = currentPieces[row][col];
+
+    if (selected === null) {
+      if (currentTurn === "white" && !isWhite(piece)) return;
+      if (currentTurn === "black" && !isBlack(piece)) return;
+      if (piece !== "") {
+        selected = [row, col];
+        legalMoves = getLegalMoves(row, col, currentPieces, currentTurn, currentEnPassant, currentCastling);
+        clearHighlights();
+        cells[row][col].classList.add("selected");
+        for (const [r,c] of legalMoves) cells[r][c].classList.add("legal");
+        highlightCheck(currentPieces, currentTurn);
+      }
+    } else {
+      const [fromRow, fromCol] = selected;
+      const isLegal = legalMoves.some(([r,c]) => r===row&&c===col);
+
+      if (isLegal) {
+        const movingPiece = currentPieces[fromRow][fromCol];
+        if ((movingPiece==="♙"&&row===0)||(movingPiece==="♟"&&row===7)) {
+          pendingPromotion = { from:[fromRow,fromCol], to:[row,col] };
+          showPromotion(movingPiece==="♙");
+          clearHighlights();
+          selected = null;
+          legalMoves = [];
+        } else {
+          sendMove([fromRow,fromCol],[row,col]).then(() => fetchState());
+          clearHighlights();
+          selected = null;
+          legalMoves = [];
+        }
+      } else if (isFriend(piece, currentTurn)) {
+        clearHighlights();
+        selected = [row,col];
+        legalMoves = getLegalMoves(row,col,currentPieces,currentTurn,currentEnPassant,currentCastling);
+        cells[row][col].classList.add("selected");
+        for (const [r,c] of legalMoves) cells[r][c].classList.add("legal");
+        highlightCheck(currentPieces, currentTurn);
+      } else {
+        clearHighlights();
+        selected = null;
+        legalMoves = [];
+      }
+    }
+  }
+</script>
+</body>
+</html>
