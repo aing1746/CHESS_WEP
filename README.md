@@ -10,7 +10,7 @@ flask, ngrok 설치 필요
 python server.py
 
 
-아무 cmd창에서 입력\
+아무 cmd에서 입력\
 ngrok http 5000
 
-ngrok cmd 창에서 나온 주소를 웹에 입력
+ngrok cmd에서 나온 주소를 웹에 입력
